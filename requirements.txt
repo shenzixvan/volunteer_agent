@@ -1,0 +1,6 @@
+streamlit
+streamlit-extras
+# 如果你接入了AI大模型，还要加上对应库，比如：
+openai
+langchain
+# 其他你代码里import的库...
