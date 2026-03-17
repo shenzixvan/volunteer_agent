@@ -4,3 +4,4 @@ streamlit-extras
 openai
 langchain
 # 其他你代码里import的库...
+dashscope>=1.14.0
