@@ -6,10 +6,13 @@ import io
 from typing import Dict, List
 import requests
 from dashscope import Generation
+import dashscope
+import hashlib
+import openpyxl
 from streamlit_extras.switch_page_button import switch_page
 from streamlit_extras.let_it_rain import rain
 
-# ===================== 全局配置（界面美化核心） =====================
+# ===================== 全局配置 =====================
 st.set_page_config(
     page_title="智能志愿服务智能体", 
     page_icon="🤝", 
@@ -17,23 +20,20 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 自定义样式（移除背景图，改为空白背景）
+# 自定义样式
 def set_custom_style():
     st.markdown("""
     <style>
-    /* 全局背景：移除图片，改为纯白空白背景 */
     .stApp {
         background: none;
-        background-color: #ffffff; /* 纯白空白背景，可根据需要调整为#f8f9fa等浅灰 */
+        background-color: #ffffff;
     }
-    /* 半透明容器，提升可读性 */
     .main > div {
         background-color: rgba(255, 255, 255, 0.9);
         padding: 20px;
         border-radius: 12px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     }
-    /* 图形化按键（圆角+渐变+hover效果） */
     .stButton>button {
         background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
         color: white;
@@ -49,14 +49,12 @@ def set_custom_style():
         transform: translateY(-2px);
         box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
-    /* 输入框美化 */
     .stTextInput>div>div>input, .stTextArea>div>div>textarea {
         border: 1px solid #e0e0e0;
         border-radius: 8px;
         padding: 10px;
         font-size: 14px;
     }
-    /* 标签页美化 */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
@@ -69,12 +67,10 @@ def set_custom_style():
         background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
         color: white;
     }
-    /* 侧边栏美化 */
     .stSidebar {
         background-color: rgba(255, 255, 255, 0.95);
         padding: 20px 10px;
     }
-    /* 动画过渡 */
     [data-testid="stVerticalBlock"] {
         transition: all 0.5s ease-in-out;
     }
@@ -93,38 +89,41 @@ def init_session():
         "volunteer_hours": [],
         "demand_matching": [],
         "notifications": [],
-        "ai_generated_content": "",  # 存储AI生成的内容
-        "show_rain_effect": False    # 动画效果开关
+        "ai_generated_content": "",
+        "show_rain_effect": False,
+        "project_desc_manual": "",
+        "trigger_ai_generate": False
     }
     for key, default_value in required_keys.items():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
+# ===================== 密码加密工具函数 =====================
+def encrypt_password(password):
+    sha256 = hashlib.sha256()
+    sha256.update(password.encode('utf-8'))
+    return sha256.hexdigest()
+
+def verify_password(input_pwd, stored_pwd):
+    return encrypt_password(input_pwd) == stored_pwd
+
 # ===================== 阿里云百炼AI调用核心函数 =====================
 def call_aliyun_llm(prompt, model="qwen-turbo"):
-    """
-    调用阿里云百炼大模型（通义千问）
-    :param prompt: 提示词
-    :param model: 模型版本（qwen-turbo：轻量版，qwen-plus：增强版）
-    :return: 生成的文本内容
-    """
-    # 配置你的阿里云百炼API Key
-    API_KEY = "sk-5159e7a24fe14eef98a5c46dac650892"
+    API_KEY = "sk-5159e7a24fe14eef98a5c46dac650892"  # 替换为你的API Key
+    dashscope.api_key = API_KEY
     Generation.api_key = API_KEY
     
     try:
-        # 调用百炼API
         response = Generation.call(
             model=model,
             messages=[
                 {"role": "system", "content": "你是一名专业的志愿服务智能助手，擅长生成项目描述、分析需求、设计工作流，语言简洁、专业、易懂。"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7,  # 生成随机性（0-1）
-            max_tokens=1000,   # 最大生成字数
+            temperature=0.7,
+            max_tokens=1000,
             result_format="text"
         )
-        # 返回生成的内容
         if response.status_code == 200:
             return response.output.text.strip()
         else:
@@ -134,51 +133,29 @@ def call_aliyun_llm(prompt, model="qwen-turbo"):
 
 # ===================== AI生成功能封装 =====================
 def ai_generate(scene, input_text):
-    """
-    按场景生成内容
-    :param scene: 场景（project_desc/ demand_analysis/ workflow_suggest）
-    :param input_text: 用户输入的基础信息
-    :return: 生成的内容
-    """
     if not input_text:
         return "请先输入基础信息！"
     
-    # 定制不同场景的提示词
     prompt_templates = {
         "project_desc": f"""
-        请根据以下志愿服务项目名称，生成专业的项目描述：
+        请根据以下志愿服务项目名称，生成专业、落地性强的项目描述（100-200字）：
         项目名称：{input_text}
-        要求：
-        1. 字数100-200字；
-        2. 突出项目价值、服务对象、执行方式；
-        3. 语言通俗易懂，符合志愿服务场景；
-        4. 结构清晰，包含项目目标、服务内容、预期效果。
+        要求：包含项目目标、服务内容、预期效果，语言通俗易懂，符合中国志愿服务场景。
         """,
         "demand_analysis": f"""
-        请分析以下被服务人群的需求，输出核心信息：
+        请结构化分析以下被服务人群的需求（分点输出，简洁明了）：
         需求内容：{input_text}
-        要求：
-        1. 核心诉求（30字内）；
-        2. 适配的志愿服务类型（如上门陪伴、物资配送、技能指导等）；
-        3. 建议服务时长和人数；
-        4. 语言简洁，分点说明。
+        要求：核心诉求（30字内）、适配志愿服务类型、建议服务配置、注意事项。
         """,
         "workflow_suggest": f"""
-        请为以下志愿服务场景设计标准化工作流：
+        请为以下志愿服务场景设计3-5步标准化工作流：
         场景：{input_text}
-        要求：
-        1. 步骤数量3-5步；
-        2. 每步包含「步骤名称」和「操作说明」；
-        3. 符合志愿服务实际执行逻辑，可落地；
-        4. 语言简洁，步骤清晰。
-        """
+        要求：每步包含步骤名称+操作说明，具体可落地，符合志愿服务执行逻辑。
+        """,
     }
     
-    # 调用AI生成
     result = call_aliyun_llm(prompt_templates[scene])
-    # 存储到Session State，用于界面展示
     st.session_state["ai_generated_content"] = result
-    # 触发庆祝动画
     st.session_state["show_rain_effect"] = True
     return result
 
@@ -196,7 +173,6 @@ def notification_module():
 # ===================== 登录/注册模块 =====================
 def auth_module():
     if not st.session_state.user_role:
-        # 未登录：美化的登录/注册界面
         st.sidebar.markdown("### 🔐 账号管理")
         tab1, tab2 = st.sidebar.tabs(["登录", "注册"])
         
@@ -218,7 +194,7 @@ def auth_module():
                     
                     if not target_user:
                         raise ValueError(f"用户名「{login_username}」不存在！")
-                    if target_user["password"] != login_password.strip():
+                    if not verify_password(login_password.strip(), target_user["password"]):
                         raise ValueError("密码错误！")
                     
                     st.session_state.user_role = target_user["role"]
@@ -228,7 +204,6 @@ def auth_module():
                         "title": "登录成功",
                         "content": f"你已以「{target_user['role']}」身份登录"
                     })
-                    # 登录成功动画
                     st.session_state["show_rain_effect"] = True
                     st.rerun()
                 except ValueError as e:
@@ -256,7 +231,7 @@ def auth_module():
                     
                     new_user = {
                         "username": reg_username.strip(),
-                        "password": reg_password.strip(),
+                        "password": encrypt_password(reg_password.strip()),
                         "role": reg_role,
                         "register_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
@@ -270,7 +245,6 @@ def auth_module():
                 except ValueError as e:
                     st.error(f"❌ {str(e)}")
     else:
-        # 已登录：用户信息+退出按钮
         st.sidebar.markdown("### 👤 当前用户")
         st.sidebar.write(f"**身份**：{st.session_state.user_role}")
         st.sidebar.write(f"**用户名**：{st.session_state.user_info['username']}")
@@ -316,6 +290,73 @@ def export_data_module(data_type):
         except Exception as e:
             st.error(f"导出失败：{str(e)}")
 
+# ===================== 数据导入模块 =====================
+def import_data_module(data_type):
+    st.subheader(f"📥 导入{data_type}数据")
+    uploaded_file = st.file_uploader(
+        f"上传{data_type}数据Excel文件",
+        type=["xlsx"],
+        key=f"import_{data_type}"
+    )
+    
+    if uploaded_file:
+        try:
+            df = pd.read_excel(uploaded_file)
+            st.write(f"预览导入数据（前5行）：")
+            st.dataframe(df.head(), use_container_width=True)
+            
+            data_mapping = {
+                "项目": "volunteer_projects",
+                "需求": "service_demands",
+                "时长": "volunteer_hours",
+                "用户": "registered_users",
+                "工作流": "workflows"
+            }
+            if data_type not in data_mapping:
+                raise ValueError("不支持的导入类型！")
+            
+            if st.button(f"✅ 确认导入{data_type}数据", use_container_width=True):
+                target_key = data_mapping[data_type]
+                import_data = df.to_dict("records")
+                
+                if data_type == "用户":
+                    for row in import_data:
+                        if "password" in row and not row["password"].startswith("5e884898da28047151d0e56f8dc629277"):
+                            row["password"] = encrypt_password(row["password"])
+                        if "register_time" not in row:
+                            row["register_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                existing_ids = []
+                if data_type in ["项目", "需求", "工作流"]:
+                    existing_ids = [item["id"] for item in st.session_state[target_key]]
+                elif data_type == "用户":
+                    existing_ids = [item["username"] for item in st.session_state[target_key]]
+                elif data_type == "时长":
+                    existing_ids = [f"{item['volunteer']}_{item['project_id']}_{item['date']}" for item in st.session_state[target_key]]
+                
+                new_data = []
+                for row in import_data:
+                    if data_type in ["项目", "需求", "工作流"]:
+                        if row.get("id") not in existing_ids:
+                            new_data.append(row)
+                    elif data_type == "用户":
+                        if row.get("username") not in existing_ids:
+                            new_data.append(row)
+                    elif data_type == "时长":
+                        unique_key = f"{row.get('volunteer')}_{row.get('project_id')}_{row.get('date')}"
+                        if unique_key not in existing_ids:
+                            new_data.append(row)
+                
+                st.session_state[target_key].extend(new_data)
+                st.session_state.notifications.append({
+                    "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "title": f"{data_type}数据导入成功",
+                    "content": f"共导入{len(new_data)}条{data_type}数据（过滤重复{len(import_data)-len(new_data)}条）"
+                })
+                st.success(f"✅ 成功导入{len(new_data)}条{data_type}数据！")
+        except Exception as e:
+            st.error(f"导入失败：{str(e)}")
+
 # ===================== 工作流搭建模块 =====================
 def workflow_builder():
     st.subheader("🛠️ 自定义工作流搭建")
@@ -323,7 +364,6 @@ def workflow_builder():
     role_options = ["志愿服务组织", "志愿者", "被服务人群"]
     default_index = role_options.index(current_role) if current_role in role_options else 0
 
-    # AI生成工作流建议
     col1, col2 = st.columns([3, 1])
     with col1:
         workflow_scene = st.text_input("工作流场景", placeholder=f"如：{current_role}服务流程", key="workflow_scene")
@@ -335,7 +375,6 @@ def workflow_builder():
             else:
                 st.error("请输入工作流场景！")
     
-    # 显示AI生成的工作流建议
     if st.session_state["ai_generated_content"]:
         with st.expander("📝 AI生成的工作流建议", expanded=True):
             st.write(st.session_state["ai_generated_content"])
@@ -433,7 +472,7 @@ def workflow_builder():
     else:
         st.info("暂无已搭建的工作流～点击上方「AI生成建议」快速创建！")
 
-# ===================== 组织端工作台（集成AI） =====================
+# ===================== 组织端工作台（终极修复版） =====================
 def org_dashboard():
     st.header("🏢 志愿服务组织工作台")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["发布项目", "项目管理", "需求对接", "数据统计", "工作流搭建"])
@@ -441,28 +480,39 @@ def org_dashboard():
     with tab1:
         st.subheader("📢 发布志愿服务项目")
         with st.container(border=True):
+            # 初始化session_state（最顶部）
+            if "project_desc_manual" not in st.session_state:
+                st.session_state["project_desc_manual"] = ""
+
+            # 项目名称输入
             project_name = st.text_input("项目名称", placeholder="如：社区敬老志愿服务", key="project_name")
-            
-            # AI生成项目描述
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                project_desc_manual = st.text_area(
-                    "项目描述（手动输入/AI生成）", 
-                    placeholder="详细描述项目内容、要求、地点等",
-                    height=150,
-                    key="project_desc_manual"
-                )
-            with col2:
-                st.write("")  # 占位
-                if st.button("✨ AI生成", use_container_width=True):
-                    if project_name:
-                        ai_result = ai_generate("project_desc", project_name)
-                        # 填充到输入框
-                        st.session_state["project_desc_manual"] = ai_result
-                        st.success("AI生成完成！")
-                    else:
-                        st.error("请先填写项目名称！")
-            
+
+            # AI生成回调函数
+            def ai_generate_callback():
+                if project_name.strip():
+                    ai_result = ai_generate("project_desc", project_name.strip())
+                    st.session_state["project_desc_manual"] = ai_result
+                    try:
+                        st.rerun()
+                    except AttributeError:
+                        st.experimental_rerun()
+                else:
+                    st.error("请先填写项目名称！")
+
+            # AI生成按钮（前置渲染）
+            if st.button("✨ AI生成项目描述", use_container_width=True):
+                ai_generate_callback()
+
+            # 项目描述输入框（仅通过value绑定）
+            project_desc_manual = st.text_area(
+                "项目描述（手动输入/AI生成）", 
+                placeholder="详细描述项目内容、要求、地点等",
+                height=150,
+                key="project_desc_manual",
+                value=st.session_state["project_desc_manual"]
+            )
+
+            # 其他表单元素
             col1, col2, col3 = st.columns(3)
             with col1:
                 project_start = st.date_input("开始时间", datetime.date.today(), key="project_start")
@@ -471,6 +521,7 @@ def org_dashboard():
             with col3:
                 project_quota = st.number_input("招募人数", min_value=1, step=1, value=5, key="project_quota")
             
+            # 发布项目按钮
             if st.button("🚀 发布项目", use_container_width=True):
                 try:
                     project_desc = st.session_state["project_desc_manual"]
@@ -526,6 +577,7 @@ def org_dashboard():
                     except IndexError:
                         st.error("❌ 项目ID不存在！")
             export_data_module("项目")
+            import_data_module("项目")
         else:
             st.info("暂无发布的项目～点击「发布项目」创建第一个项目吧！")
     
@@ -589,6 +641,7 @@ def org_dashboard():
             else:
                 st.info("暂无需求数据～")
         export_data_module("用户")
+        import_data_module("用户")
     
     with tab5:
         workflow_builder()
@@ -679,6 +732,7 @@ def volunteer_dashboard():
             total_hours = sum([h["hours"] for h in my_hours])
             st.write(f"🏆 累计服务时长：**{total_hours}小时**")
             export_data_module("时长")
+            import_data_module("时长")
         else:
             st.info("你暂无服务时长记录～")
     
@@ -721,7 +775,7 @@ def volunteer_dashboard():
     with tab5:
         workflow_builder()
 
-# ===================== 被服务人工作台（集成AI） =====================
+# ===================== 被服务人工作台 =====================
 def demand_dashboard():
     st.header("🙋 被服务人群工作台")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["发布需求", "需求跟踪", "服务评价", "我的需求", "工作流搭建"])
@@ -732,7 +786,6 @@ def demand_dashboard():
             demand_name = st.text_input("需求名称", placeholder="如：独居老人日常陪伴", key="demand_name")
             demand_desc = st.text_area("需求描述", placeholder="详细描述需求内容、时间、地点等", height=150, key="demand_desc")
             
-            # AI分析需求
             if st.button("✨ AI分析需求", use_container_width=True):
                 if demand_desc:
                     ai_result = ai_generate("demand_analysis", demand_desc)
@@ -740,6 +793,12 @@ def demand_dashboard():
                         st.write(ai_result)
                 else:
                     st.error("请先填写需求描述！")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                demand_location = st.text_input("需求地点", placeholder="如：XX社区XX小区", key="demand_location")
+            with col2:
+                demand_time = st.date_input("期望服务时间", datetime.date.today(), key="demand_time")
             
             if st.button("🚀 发布需求", use_container_width=True):
                 try:
@@ -750,8 +809,9 @@ def demand_dashboard():
                         "id": len(st.session_state.service_demands) + 1,
                         "name": demand_name,
                         "desc": demand_desc,
+                        "location": demand_location,
+                        "expect_time": demand_time,
                         "publisher": st.session_state.user_info["username"],
-                        "publish_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "待对接",
                         "matching_volunteer": ""
                     }
@@ -768,26 +828,45 @@ def demand_dashboard():
     
     with tab2:
         st.subheader("📊 需求跟踪")
-        if st.session_state.service_demands:
-            my_demands = [d for d in st.session_state.service_demands if d["publisher"] == st.session_state.user_info["username"]]
-            if my_demands:
-                demands_df = pd.DataFrame(my_demands)
-                st.dataframe(demands_df.drop("desc", axis=1), use_container_width=True)
-                export_data_module("需求")
-            else:
-                st.info("你暂无发布的需求～")
+        my_demands = [d for d in st.session_state.service_demands if d["publisher"] == st.session_state.user_info["username"]]
+        if my_demands:
+            demands_df = pd.DataFrame(my_demands)
+            st.dataframe(demands_df.drop("desc", axis=1), use_container_width=True)
+            import_data_module("需求")
         else:
-            st.info("暂无服务需求～")
+            st.info("你暂无发布的需求～")
     
     with tab3:
         st.subheader("⭐ 服务评价")
-        st.info("功能待开发：可对已完成的服务需求进行星级评价和文字反馈～")
+        finished_demands = [d for d in st.session_state.service_demands if d["publisher"] == st.session_state.user_info["username"] and d["status"] == "已完成"]
+        if finished_demands:
+            demand_id = st.number_input("选择需求ID评价", min_value=1, max_value=len(finished_demands), step=1, key="eval_demand_id")
+            rating = st.slider("满意度评分", 1, 5, 5, key="eval_rating")
+            comment = st.text_area("评价内容", placeholder="如：志愿者服务很贴心，解决了我的实际问题", key="eval_comment")
+            
+            if st.button("✅ 提交评价", use_container_width=True):
+                try:
+                    target = [d for d in st.session_state.service_demands if d["id"] == demand_id][0]
+                    if target["status"] != "已完成":
+                        raise ValueError("该需求未完成，无法评价！")
+                    
+                    st.session_state.notifications.append({
+                        "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                        "title": "评价提交成功",
+                        "content": f"你已对「{target['name']}」进行{rating}星评价"
+                    })
+                    st.success(f"✅ 评价提交成功！感谢你的反馈～")
+                except (IndexError, ValueError) as e:
+                    st.error(f"❌ {str(e)}")
+        else:
+            st.info("你暂无已完成的需求可评价～")
     
     with tab4:
         st.subheader("📋 我的需求")
         my_demands = [d for d in st.session_state.service_demands if d["publisher"] == st.session_state.user_info["username"]]
         if my_demands:
-            st.dataframe(pd.DataFrame(my_demands)[["id", "name", "publish_time", "status", "matching_volunteer"]], use_container_width=True)
+            st.dataframe(pd.DataFrame(my_demands)[["id", "name", "status", "expect_time", "location"]], use_container_width=True)
+            export_data_module("需求")
         else:
             st.info("你暂无发布的需求～")
     
@@ -796,15 +875,22 @@ def demand_dashboard():
 
 # ===================== 主函数 =====================
 def main():
-    # 初始化样式和Session
     set_custom_style()
     init_session()
     
-    # 侧边栏：登录/注册 + 消息通知
+    if st.session_state.get("show_rain_effect", False):
+        rain(
+            emoji="🎉",
+            font_size=20,
+            falling_speed=5,
+            animation_length="short",
+        )
+        st.session_state["show_rain_effect"] = False
+    
+    st.sidebar.markdown("# 🤝 智能志愿服务智能体")
     auth_module()
     notification_module()
     
-    # 主内容区：根据用户角色展示不同工作台
     if st.session_state.user_role == "志愿服务组织":
         org_dashboard()
     elif st.session_state.user_role == "志愿者":
@@ -812,22 +898,10 @@ def main():
     elif st.session_state.user_role == "被服务人群":
         demand_dashboard()
     else:
-        # 未登录时的欢迎页
         st.markdown("# 🤝 智能志愿服务智能体")
         st.markdown("### 一站式志愿服务管理平台")
-        st.markdown("#### 支持组织发布项目、志愿者报名服务、被服务人发布需求，AI辅助高效管理！")
-        st.divider()
-        st.info("请先在左侧侧边栏登录/注册，体验完整功能～")
-    
-    # 动画效果（如登录/发布成功后的雨景效果）
-    if st.session_state["show_rain_effect"]:
-        rain(
-            emoji="✅",
-            font_size=20,
-            falling_speed=5,
-            animation_length=2,
-        )
-        st.session_state["show_rain_effect"] = False
+        st.markdown("#### 支持组织发布项目、志愿者报名服务、被服务人发布需求")
+        st.info("请先在左侧栏注册/登录，体验完整功能～")
 
 if __name__ == "__main__":
     main()
