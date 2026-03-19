@@ -1,7 +1,7 @@
-streamlit
-streamlit-extras
-# 如果你接入了AI大模型，还要加上对应库，比如：
-openai
-langchain
-# 其他你代码里import的库...
-dashscope>=1.14.0
+streamlit>=1.30.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+dashscope>=1.25.14
+requests>=2.31.0
+streamlit-extras>=0.4.2
+hashlib
